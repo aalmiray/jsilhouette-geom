@@ -1,0 +1,198 @@
+/*
+ * Copyright (c) 2008-2011, Andres Almiray
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 3. Neither the name of jSilhouette nor the names of its contributors may be used
+ *    to endorse or promote products derived from this software without
+ *    specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+apply plugin: 'java'
+apply plugin: 'maven'
+
+sourceCompatibility = '1.5'
+targetCompatibility = '1.5'
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    examples
+    demo
+    deployerJars
+}
+
+dependencies {
+    testCompile "junit:junit:4.8.2"
+    deployerJars 'org.apache.maven.wagon:wagon-webdav:1.0-beta-2',
+                 'org.apache.maven:maven-ant-tasks:2.1.0'
+    examples 'de.java2html:java2html:5.0',
+             'org.codehaus.groovy:groovy-all:1.7.10'
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ['src/main/java']
+    }
+    examples {
+        compileClasspath = sourceSets.main.classes
+        java.srcDirs = ['src/examples/java']
+        classesDir = "$buildDir/classes/examples" as File
+    }
+    demo {
+        compileClasspath = sourceSets.main.classes
+        java.srcDirs = ['src/demo/java']
+        classesDir = "$buildDir/classes/demo" as File
+    }
+}
+
+metaInf << fileTree(dir: file('..'), includes: ['LICENSE.txt'])
+
+configure([compileJava, compileTestJava]) {
+    options.deprecation = true
+    options.debug = true
+}
+
+jar {
+    manifest {
+        attributes(
+            'Built-By': System.properties['user.name'],
+            'Created-By': System.properties['java.vm.version'] + " (" + System.properties['java.vm.vendor'] + ")",
+            'Implementation-Version': version,
+            'Implementation-Vendor': 'griffon.codehaus.org',
+            'Implementation-Title': 'jSilhouette'
+        )
+    }
+}
+
+task examples2html(dependsOn: [examplesClasses, javadoc]) << {
+    def destinationDir = project.file("${buildDir}/classes/examples")
+
+    ant.taskdef(name: 'java2html',
+                classname: 'de.java2html.anttasks.Java2HtmlTask',
+                classpath: configurations.examples.asPath)
+    ant.taskdef(name: 'groovy',
+                classname: 'org.codehaus.groovy.ant.Groovy',
+                classpath: configurations.examples.asPath)
+
+    ant.java2html(
+        srcdir: project.file('src/examples/java'),
+        destdir: destinationDir,
+        includes: '**/*.java',
+        style: 'eclipse',
+        showLineNumbers: true,
+        showFileName: false,
+        showTableBorder: false)
+
+    ant.groovy(
+        src: project.file('src/examples/groovy/org/codehaus/griffon/jsilhouette/geom/ExampleParser.groovy')) {
+        classpath {
+            pathelement(location: sourceSets.main.classes.asPath)
+            pathelement(location: sourceSets.examples.classes.asPath)
+            pathelement(location: destinationDir)
+        }
+        arg(value: project.file('.').absolutePath)
+    }
+}
+
+task jarJavadoc(type: Jar, dependsOn: [examples2html]) {
+    from javadoc.destinationDir
+    classifier = 'javadoc'
+}
+
+task jarSources(type: Jar) {
+    from sourceSets.main.allSource
+    classifier = 'sources'
+}
+
+artifacts {
+    archives jar
+    archives(jarJavadoc) {
+        type = 'javadoc' 
+    }
+    archives(jarSources) {
+        type = 'sources' 
+    }
+}
+
+installer = install.repositories.mavenInstaller
+def deployer = null
+
+if(!project.hasProperty('codehausUsername')) codehausUsername = ''
+if(!project.hasProperty('codehausPassword')) codehausPassword = ''
+
+uploadArchives {
+    repositories {
+        deployer = mavenDeployer {
+            name = 'codehausDeployer'
+            configuration = configurations.deployerJars
+            uploadDescriptor = true
+            repository(url: codehausReleaseUrl) {
+                authentication(userName: codehausUsername, password: codehausPassword)
+            }
+            snapshotRepository(url: codehausSnapshotUrl) {
+                uniqueVersion = false
+                authentication(userName: codehausUsername, password: codehausPassword)
+            }
+        }
+    }
+}
+
+[installer, deployer].each { repo ->
+    configure(repo) {
+        pom.project {
+            name 'jSilhouette'
+            description 'jSilhouette: additional Java2D shapes'
+            url('http://griffon.codehaus.org/jSilhouette')
+            licenses {
+                license {
+                    name 'BSD License'
+                    url 'http://en.wikipedia.org/wiki/BSD_licenses'
+                    distribution 'repo'
+                }
+            }
+            repositories {
+                repository {
+                    id('codehaus-release')
+                    name('Codehaus')
+                    url('http://repository.codehaus.org')
+                }
+            }
+        }
+    }
+}
+
+task 'run-demo'(dependsOn: demoClasses) << {
+    List classpath = [project.file("$buildDir/classes/main")]
+    classpath << project.file("$buildDir/classes/demo")
+    String javaHome = System.getProperty('java.home')
+    String javaCmd = [javaHome, 'bin', 'java'].join(File.separator)
+
+    List cmd = [javaCmd]
+    ['-classpath', classpath.join(File.pathSeparator), 'org.codehaus.griffon.jsilhouette.geom.Demo'].each { s -> if(s) cmd << s }
+
+    Process p = Runtime.runtime.exec(cmd as String[], null, null)
+    p.consumeProcessOutput(System.out, System.err)
+    p.waitFor()
+}
+
